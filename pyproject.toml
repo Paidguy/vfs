@@ -1,0 +1,49 @@
+# Project metadata
+[tool.poetry]
+name = "vfs-appointment-bot"
+version = "1.2.0"
+description = "VFS Appointment Bot - This script automates checking for appointments at VFS Global offices in a specified country."
+authors = ["Ranjan Mohanty <ranjan@duck.com>"]
+license = "MIT"
+readme = "README.md"
+keywords = ["vfs", "vfs-bot", "vfs-appointment-bot", "visa-appointment-bot"]
+
+# URLs
+[tool.poetry.urls]
+repository = "https://github.com/ranjan-mohanty/vfs-appointment-bot/blob/main/README.md"
+homepage = "https://github.com/ranjan-mohanty/vfs-appointment-bot/blob/main"
+
+# Build System
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"
+
+# Dependencies
+[tool.poetry.dependencies]
+python = "^3.9"
+# patchright is a drop-in patched Playwright binary with bot-detection evasion baked in.
+# It is API-compatible with playwright's sync_api; no stealth plugin call needed.
+patchright = "^1.48.0"
+requests = "^2.31.0"
+twilio = "^9.3.0"
+tqdm = "^4.66.4"
+
+[tool.poetry.dev-dependencies]
+# ruff replaces flake8 + black: faster, single config, same rule coverage.
+ruff = "^0.4.0"
+
+# Ruff configuration
+[tool.ruff]
+line-length = 120
+target-version = "py39"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]  # line length handled separately
+
+[tool.ruff.format]
+quote-style = "double"
+
+# Entry points
+[tool.poetry.scripts]
+vfs-appointment-bot = "vfs_appointment_bot.main:main"
