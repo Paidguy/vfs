@@ -103,31 +103,40 @@ class VfsBot(ABC):
             logging.debug("Page title after navigation: '%s'", page.title())
             logging.debug("Current URL: %s", page.url)
 
-            # ---- Cloudflare detection ------------------------------------
+            # ---- Cloudflare detection + wait for auto-resolution ----------
+            logging.info("Checking for Cloudflare challenge …")
             if self._is_cloudflare_blocked(page):
-                logging.error(
-                    "CLOUDFLARE BLOCK DETECTED — title='%s' url='%s'. "
-                    "camoufox should bypass this. If it persists, a residential proxy is needed.",
-                    page.title(), page.url,
+                logging.warning(
+                    "Cloudflare challenge detected (title='%s'). "
+                    "Waiting up to 90s for camoufox to auto-resolve …",
+                    page.title(),
                 )
-                save_screenshot(page, "00_cloudflare_blocked")
-                # Still attempt to wait — camoufox may resolve it shortly
-                logging.info("Waiting up to 30s for Cloudflare to self-resolve …")
-                try:
-                    page.wait_for_function(
-                        """() => {
-                            const t = document.title.toLowerCase();
-                            return !t.includes('just a moment') &&
-                                   !t.includes('checking your browser') &&
-                                   t !== '';
-                        }""",
-                        timeout=30_000,
+                save_screenshot(page, "00_cloudflare_challenge")
+
+                # Poll every 5s until CF clears or timeout
+                resolved = False
+                for attempt in range(18):  # 18 × 5s = 90s
+                    page.wait_for_timeout(5_000)
+                    if not self._is_cloudflare_blocked(page):
+                        logging.info(
+                            "Cloudflare resolved after ~%ds (title='%s')",
+                            (attempt + 1) * 5, page.title(),
+                        )
+                        resolved = True
+                        break
+                    logging.debug(
+                        "CF still active after %ds (title='%s') …",
+                        (attempt + 1) * 5, page.title(),
                     )
-                    logging.info("Cloudflare resolved — real page now loading")
-                except Exception:
-                    logging.error("Cloudflare did not resolve — login will likely fail")
+
+                if not resolved:
+                    logging.error(
+                        "Cloudflare did not resolve after 90s. "
+                        "The VPS IP may be hard-blocked — consider a residential proxy."
+                    )
+                    save_screenshot(page, "00_cloudflare_unresolved")
             else:
-                logging.info("No Cloudflare block detected — page loaded cleanly")
+                logging.info("No Cloudflare challenge detected — page loaded cleanly")
 
             save_screenshot(page, "01_landing_page")
 
@@ -191,9 +200,25 @@ class VfsBot(ABC):
             try:
                 from camoufox.sync_api import Camoufox
                 logging.info("Using camoufox (Cloudflare-resistant Firefox)")
-                with Camoufox(headless=headless, geoip=True) as browser:
+                
+                # Headless browsers are highly detectable. We use headed mode
+                # inside a VirtualDisplay (Xvfb) for maximum stealth on servers.
+                try:
+                    from camoufox.virtdisplay import VirtualDisplay
+                    display = VirtualDisplay(size=(1280, 800))
+                    display.start()
+                    logging.info("Started VirtualDisplay (Xvfb) for headed mode stealth")
+                except Exception as e:
+                    logging.warning("Could not start VirtualDisplay: %s", e)
+                    display = None
+
+                with Camoufox(headless=False, humanize=True, geoip=True) as browser:
                     page = browser.new_page()
-                    yield page
+                    try:
+                        yield page
+                    finally:
+                        if display:
+                            display.stop()
                 return
             except ImportError:
                 logging.warning(
@@ -219,39 +244,46 @@ class VfsBot(ABC):
 
     @staticmethod
     def _is_cloudflare_blocked(page) -> bool:
-        """Return ``True`` if the current page appears to be a Cloudflare challenge.
+        """Return ``True`` if the current page is a Cloudflare challenge.
 
-        Checks title text, URL markers, and known CF DOM selectors.
+        Uses locale-independent DOM selectors only — Cloudflare's challenge
+        HTML elements are always in English regardless of the page language.
+        Title-based checks are explicitly avoided because Cloudflare localises
+        the visible text (e.g. 'Hanya sebentar...' in Indonesian).
 
         Args:
             page: A Playwright ``Page`` object.
 
         Returns:
-            ``True`` if a Cloudflare challenge is detected, ``False`` otherwise.
+            ``True`` if a Cloudflare challenge is active, ``False`` otherwise.
         """
-        title = page.title().lower()
-        url = page.url
-
-        # Empty title or known CF challenge titles
-        cf_titles = ["just a moment", "attention required", "checking your browser"]
-        if title == "" or any(t in title for t in cf_titles):
-            logging.debug("CF detected via title: '%s'", title)
-            return True
-
-        # CF URL markers
-        if "/__cf_chl_rt_tk=" in url or "/cdn-cgi/challenge-platform/" in url:
-            logging.debug("CF detected via URL marker: %s", url)
-            return True
-
-        # CF DOM selectors
-        for sel in ["#challenge-running", "#challenge-stage", "#challenge-form",
-                    "div.cf-turnstile", "iframe[src*='challenges.cloudflare.com']"]:
+        # CF DOM selectors — locale-independent, always present during challenge
+        cf_selectors = [
+            "#challenge-running",
+            "#challenge-stage",
+            "#challenge-form",
+            "div.cf-turnstile",
+            "iframe[src*='challenges.cloudflare.com']",
+            "[data-ray-id]",  # Cloudflare Ray ID present on all CF pages
+        ]
+        for sel in cf_selectors:
             try:
                 if page.query_selector(sel):
-                    logging.debug("CF detected via DOM selector: %s", sel)
+                    logging.debug("CF challenge detected via DOM selector: %s", sel)
                     return True
             except Exception:
                 pass
+
+        # URL-based check (also locale-independent)
+        url = page.url
+        if "/__cf_chl_rt_tk=" in url or "/cdn-cgi/challenge-platform/" in url:
+            logging.debug("CF challenge detected via URL: %s", url)
+            return True
+
+        # Empty title is a reliable proxy for CF (real VFS pages always have a title)
+        if page.title().strip() == "":
+            logging.debug("CF suspected: page title is empty")
+            return True
 
         return False
 
