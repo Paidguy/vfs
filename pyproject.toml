@@ -24,6 +24,7 @@ python = "^3.9"
 # patchright is a drop-in patched Playwright binary with bot-detection evasion baked in.
 # It is API-compatible with playwright's sync_api; no stealth plugin call needed.
 patchright = "^1.48.0"
+camoufox = {version = ">=0.4.0", extras = ["geoip"]}
 requests = "^2.31.0"
 twilio = "^9.3.0"
 tqdm = "^4.66.4"
@@ -31,6 +32,8 @@ tqdm = "^4.66.4"
 [tool.poetry.dev-dependencies]
 # ruff replaces flake8 + black: faster, single config, same rule coverage.
 ruff = "^0.4.0"
+pytest = "^8.0.0"
+pytest-timeout = "^2.3.0"
 
 # Ruff configuration
 [tool.ruff]

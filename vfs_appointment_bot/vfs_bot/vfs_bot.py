@@ -2,9 +2,8 @@ import argparse
 import logging
 import re
 from abc import ABC, abstractmethod
-from typing import Dict, List, Optional
-
-from patchright.sync_api import Page, sync_playwright
+from contextlib import contextmanager
+from typing import Callable, Dict, List, Optional, Tuple
 
 from vfs_appointment_bot.notification.notification_client_factory import (
     get_notification_client,
@@ -62,7 +61,7 @@ class VfsBot(ABC):
 
         # ---- Read mandatory configuration --------------------------------
         try:
-            browser_type = get_config_value("browser", "type", "firefox")
+            browser_type = get_config_value("browser", "type", "camoufox")
             headless_raw = get_config_value("browser", "headless", "True")
             url_key = f"{self.source_country_code}-{self.destination_country_code}"
             vfs_url = get_config_value("vfs-url", url_key)
@@ -85,66 +84,79 @@ class VfsBot(ABC):
         logging.debug("Appointment params resolved: %s", appointment_params)
 
         # ---- Launch browser ----------------------------------------------
-        logging.info("Launching %s browser (headless=%s)", browser_type, headless)
-        with sync_playwright() as p:
-            browser = getattr(p, browser_type).launch(headless=headless)
-            page = browser.new_page()
+        logging.info("Launching browser (type=%s headless=%s)", browser_type, headless)
+        with self._browser_context(browser_type, headless) as page:
 
-            # patchright already patches the CDP/WebDriver fingerprint at the
-            # binary level — no additional stealth plugin call is required.
             page.set_default_timeout(30_000)
             page.set_default_navigation_timeout(60_000)
 
+            # Block web font requests so screenshots never hang on font-load.
+            page.route(
+                "**/*.{woff,woff2,ttf,otf,eot}",
+                lambda route: route.abort(),
+            )
+            logging.debug("Font request blocking enabled")
+
+            # ---- Navigate ------------------------------------------------
             logging.info("Navigating to %s", vfs_url)
             page.goto(vfs_url)
-            logging.debug("Page title after navigation: %s", page.title())
+            logging.debug("Page title after navigation: '%s'", page.title())
             logging.debug("Current URL: %s", page.url)
 
-            # Wait for the actual login form to appear — Cloudflare Turnstile
-            # may hold the page for several seconds before the real DOM renders.
-            # We poll for the email input (placeholder="jane.doe@email.com") with
-            # a generous 90-second window to cover slow Cloudflare resolutions.
-            logging.info("Waiting for login form to appear (Cloudflare may take up to 90s) …")
-            try:
-                page.wait_for_selector(
-                    '[placeholder="jane.doe@email.com"]', timeout=90_000
+            # ---- Cloudflare detection ------------------------------------
+            if self._is_cloudflare_blocked(page):
+                logging.error(
+                    "CLOUDFLARE BLOCK DETECTED — title='%s' url='%s'. "
+                    "camoufox should bypass this. If it persists, a residential proxy is needed.",
+                    page.title(), page.url,
                 )
-                logging.debug("Login form is visible — page loaded successfully")
-            except Exception as cf_exc:
-                logging.warning(
-                    "Login form did not appear in 90s — Cloudflare may be blocking: %s", cf_exc
-                )
+                save_screenshot(page, "00_cloudflare_blocked")
+                # Still attempt to wait — camoufox may resolve it shortly
+                logging.info("Waiting up to 30s for Cloudflare to self-resolve …")
+                try:
+                    page.wait_for_function(
+                        """() => {
+                            const t = document.title.toLowerCase();
+                            return !t.includes('just a moment') &&
+                                   !t.includes('checking your browser') &&
+                                   t !== '';
+                        }""",
+                        timeout=30_000,
+                    )
+                    logging.info("Cloudflare resolved — real page now loading")
+                except Exception:
+                    logging.error("Cloudflare did not resolve — login will likely fail")
+            else:
+                logging.info("No Cloudflare block detected — page loaded cleanly")
+
             save_screenshot(page, "01_landing_page")
 
+            # ---- Pre-login steps -----------------------------------------
             logging.debug("Running pre-login steps")
             self.pre_login_steps(page)
             save_screenshot(page, "02_after_pre_login_steps")
 
+            # ---- Login ---------------------------------------------------
             try:
                 logging.info("Attempting login with email: %s", email_id)
                 self.login(page, email_id, password)
                 logging.info("Login successful — current URL: %s", page.url)
                 save_screenshot(page, "03_post_login")
             except Exception as login_exc:
-                logging.debug(
-                    "Login exception detail (full traceback):", exc_info=True
-                )
+                logging.debug("Login exception (full traceback):", exc_info=True)
                 save_screenshot(page, "04_login_failed")
-                browser.close()
                 raise LoginError(
                     f"Login failed [{type(login_exc).__name__}: {login_exc}]. "
                     "Please verify your credentials by logging in manually."
                 ) from login_exc
 
+            # ---- Appointment check ---------------------------------------
             logging.info("Checking appointments for params: %s", appointment_params)
             appointment_found = False
             try:
                 dates = self.check_for_appointment(page, appointment_params)
                 if dates:
-                    logging.info(
-                        "FOUND appointments on: %s",
-                        ", ".join(dates),
-                    )
+                    logging.info("FOUND appointments on: %s", ", ".join(dates))
                     self.notify_appointment(appointment_params, dates)
                     appointment_found = True
                 else:
@@ -153,27 +165,102 @@ class VfsBot(ABC):
                 logging.error("Appointment check failed: %s", exc, exc_info=True)
                 save_screenshot(page, "05_appointment_check_failed")
 
-            browser.close()
-            logging.info("Browser closed — cycle complete. appointment_found=%s", appointment_found)
-            return appointment_found
+        logging.info("Browser closed — cycle complete. appointment_found=%s", appointment_found)
+        return appointment_found
+
+    # ------------------------------------------------------------------
+    # Browser launcher
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    @contextmanager
+    def _browser_context(browser_type: str, headless: bool):
+        """Context manager that yields a ready Playwright Page object.
+
+        Tries ``camoufox`` first (best Cloudflare bypass). Falls back to
+        ``patchright`` for any other browser type or if camoufox is unavailable.
+
+        Args:
+            browser_type: ``"camoufox"``, ``"firefox"``, ``"chromium"``, or ``"webkit"``.
+            headless: Whether to run the browser without a visible window.
+
+        Yields:
+            A Playwright-compatible ``Page`` instance.
+        """
+        if browser_type == "camoufox":
+            try:
+                from camoufox.sync_api import Firefox
+                logging.info("Using camoufox Firefox (Cloudflare-resistant)")
+                with Firefox(headless=headless, geoip=True) as browser:
+                    page = browser.new_page()
+                    yield page
+                return
+            except ImportError:
+                logging.warning(
+                    "camoufox is not installed — falling back to patchright firefox. "
+                    "Install it with: pip install camoufox[geoip] && python -m camoufox fetch"
+                )
+                browser_type = "firefox"
+
+        # patchright fallback
+        from patchright.sync_api import sync_playwright
+        logging.info("Using patchright %s", browser_type)
+        with sync_playwright() as p:
+            browser = getattr(p, browser_type).launch(headless=headless)
+            page = browser.new_page()
+            try:
+                yield page
+            finally:
+                browser.close()
+
+    # ------------------------------------------------------------------
+    # Cloudflare detection
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _is_cloudflare_blocked(page) -> bool:
+        """Return ``True`` if the current page appears to be a Cloudflare challenge.
+
+        Checks title text, URL markers, and known CF DOM selectors.
+
+        Args:
+            page: A Playwright ``Page`` object.
+
+        Returns:
+            ``True`` if a Cloudflare challenge is detected, ``False`` otherwise.
+        """
+        title = page.title().lower()
+        url = page.url
+
+        # Empty title or known CF challenge titles
+        cf_titles = ["just a moment", "attention required", "checking your browser"]
+        if title == "" or any(t in title for t in cf_titles):
+            logging.debug("CF detected via title: '%s'", title)
+            return True
+
+        # CF URL markers
+        if "/__cf_chl_rt_tk=" in url or "/cdn-cgi/challenge-platform/" in url:
+            logging.debug("CF detected via URL marker: %s", url)
+            return True
+
+        # CF DOM selectors
+        for sel in ["#challenge-running", "#challenge-stage", "#challenge-form",
+                    "div.cf-turnstile", "iframe[src*='challenges.cloudflare.com']"]:
+            try:
+                if page.query_selector(sel):
+                    logging.debug("CF detected via DOM selector: %s", sel)
+                    return True
+            except Exception:
+                pass
+
+        return False
 
     # ------------------------------------------------------------------
     # Shared helpers
     # ------------------------------------------------------------------
 
     def get_appointment_params(self, args: argparse.Namespace) -> Dict[str, str]:
-        """Collect appointment parameters from CLI args or interactive prompts.
-
-        Iterates over :attr:`appointment_param_keys` and resolves each value
-        from the ``--appointment-params`` argument if provided, or falls back
-        to an interactive ``input()`` prompt.
-
-        Args:
-            args: Parsed CLI arguments.
-
-        Returns:
-            A dictionary mapping each appointment parameter key to its value.
-        """
+        """Collect appointment parameters from CLI args or interactive prompts."""
         appointment_params: Dict[str, str] = {}
         provided = getattr(args, "appointment_params", None) or {}
         for key in self.appointment_param_keys:
@@ -187,21 +274,14 @@ class VfsBot(ABC):
     def notify_appointment(
         self, appointment_params: Dict[str, str], dates: List[str]
     ) -> None:
-        """Dispatch appointment notifications to all configured channels.
-
-        Args:
-            appointment_params: The search criteria used (logged in the message).
-            dates: The available appointment date strings found.
-        """
+        """Dispatch appointment notifications to all configured channels."""
         criteria = ", ".join(appointment_params.values())
         message = f"Found appointment(s) for {criteria} on {', '.join(dates)}"
         logging.debug("Notification message: %s", message)
 
         channels_raw = get_config_value("notification", "channels", "")
         if not channels_raw.strip():
-            logging.warning(
-                "No notification channels configured — skipping notification."
-            )
+            logging.warning("No notification channels configured — skipping notification.")
             return
 
         for channel in channels_raw.split(","):
@@ -216,19 +296,8 @@ class VfsBot(ABC):
                     "Failed to send %s notification: %s", channel, exc, exc_info=True
                 )
 
-    # ------------------------------------------------------------------
-    # Shared pre-login helper
-    # ------------------------------------------------------------------
-
-    def _reject_cookies_if_present(self, page: Page) -> None:
-        """Attempt to dismiss a cookie-consent banner if one is visible.
-
-        Uses a short timeout so the method never blocks if there is no banner.
-        Silently swallows the timeout exception — the bot continues regardless.
-
-        Args:
-            page: The Playwright page object.
-        """
+    def _reject_cookies_if_present(self, page) -> None:
+        """Attempt to dismiss a cookie-consent banner if one is visible."""
         try:
             page.get_by_role("button", name=self._REJECT_COOKIE_RE).click(timeout=3_000)
             logging.debug("Rejected cookie consent banner.")
@@ -240,49 +309,15 @@ class VfsBot(ABC):
     # ------------------------------------------------------------------
 
     @abstractmethod
-    def login(self, page: Page, email_id: str, password: str) -> None:
-        """Perform the country-specific VFS login sequence.
-
-        Subclasses must fill the login form and wait for a reliable
-        post-login signal before returning.
-
-        Args:
-            page: The Playwright page object.
-            email_id: VFS account email address.
-            password: VFS account password.
-
-        Raises:
-            Exception: If login cannot be confirmed (caught and re-raised as
-                :class:`LoginError` by :meth:`run`).
-        """
+    def login(self, page, email_id: str, password: str) -> None:
+        """Perform the country-specific VFS login sequence."""
 
     @abstractmethod
-    def pre_login_steps(self, page: Page) -> None:
-        """Perform any actions required *before* the login form is submitted.
-
-        Examples include accepting/rejecting cookie banners, selecting a
-        language, or waiting for a Cloudflare challenge to auto-resolve.
-
-        Args:
-            page: The Playwright page object.
-        """
+    def pre_login_steps(self, page) -> None:
+        """Perform any actions required *before* the login form is submitted."""
 
     @abstractmethod
     def check_for_appointment(
-        self, page: Page, appointment_params: Dict[str, str]
+        self, page, appointment_params: Dict[str, str]
     ) -> Optional[List[str]]:
-        """Check the VFS booking form for available appointments.
-
-        Subclasses must navigate the post-login booking flow, apply the
-        filters specified by ``appointment_params``, and return the list of
-        available date strings.
-
-        Args:
-            page: The Playwright page object.
-            appointment_params: Booking filter criteria (e.g. visa centre,
-                category, sub-category).
-
-        Returns:
-            A non-empty list of date strings if slots are found, or ``None``
-            / an empty list when none are available.
-        """
+        """Check the VFS booking form for available appointments."""
