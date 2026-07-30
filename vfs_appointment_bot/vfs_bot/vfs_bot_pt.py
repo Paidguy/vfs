@@ -96,6 +96,10 @@ class VfsBotPt(VfsBot):
             Exception: If the page URL does not change away from ``/login``
                 within 30 seconds, indicating a failed login.
         """
+        # Ensure the login form is fully rendered before interacting
+        logging.debug("Waiting for email input to be ready …")
+        page.wait_for_selector('[placeholder="jane.doe@email.com"]', timeout=60_000)
+
         logging.debug("Filling email field with placeholder 'jane.doe@email.com'")
         page.get_by_placeholder("jane.doe@email.com").fill(email_id)
 
@@ -112,10 +116,10 @@ class VfsBotPt(VfsBot):
         logging.debug("Clicking Sign In button")
         page.get_by_role("button", name=_SIGN_IN_RE).click()
 
-        logging.debug("Waiting for URL to leave /login (up to 30s) …")
+        logging.debug("Waiting for URL to leave /login (up to 45s) …")
         page.wait_for_function(
             "() => !window.location.pathname.endsWith('/login')",
-            timeout=30_000,
+            timeout=45_000,
         )
         logging.debug("Login URL check passed — new URL: %s", page.url)
 

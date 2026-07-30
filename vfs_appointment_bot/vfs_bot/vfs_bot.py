@@ -99,6 +99,21 @@ class VfsBot(ABC):
             page.goto(vfs_url)
             logging.debug("Page title after navigation: %s", page.title())
             logging.debug("Current URL: %s", page.url)
+
+            # Wait for the actual login form to appear — Cloudflare Turnstile
+            # may hold the page for several seconds before the real DOM renders.
+            # We poll for the email input (placeholder="jane.doe@email.com") with
+            # a generous 90-second window to cover slow Cloudflare resolutions.
+            logging.info("Waiting for login form to appear (Cloudflare may take up to 90s) …")
+            try:
+                page.wait_for_selector(
+                    '[placeholder="jane.doe@email.com"]', timeout=90_000
+                )
+                logging.debug("Login form is visible — page loaded successfully")
+            except Exception as cf_exc:
+                logging.warning(
+                    "Login form did not appear in 90s — Cloudflare may be blocking: %s", cf_exc
+                )
             save_screenshot(page, "01_landing_page")
 
             logging.debug("Running pre-login steps")

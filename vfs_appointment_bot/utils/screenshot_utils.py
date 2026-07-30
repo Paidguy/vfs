@@ -31,7 +31,7 @@ def save_screenshot(page, label: str) -> None:
         screenshot_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]  # ms precision
         path = screenshot_dir / f"{timestamp}_{label}.png"
-        page.screenshot(path=str(path), full_page=True)
+        page.screenshot(path=str(path), full_page=True, timeout=8_000, animations="disabled")
         logging.debug("Screenshot saved → %s", path)
     except Exception as exc:
         logging.warning("Could not save screenshot '%s': %s", label, exc)
