@@ -45,7 +45,7 @@ def test_camoufox_binary_present():
     try:
         from camoufox.sync_api import Camoufox
         from camoufox.virtdisplay import VirtualDisplay
-        display = VirtualDisplay(size=(1280, 800))
+        display = VirtualDisplay()
         display.start()
         try:
             with Camoufox(headless=False) as browser:
@@ -80,7 +80,7 @@ def test_no_cloudflare_block():
     url = get_config_value("vfs-url", "AO-PT")
     assert url, "AO-PT URL not configured"
 
-    display = VirtualDisplay(size=(1280, 800))
+    display = VirtualDisplay()
     display.start()
     try:
         with Camoufox(headless=False, humanize=True, geoip=True) as browser:
@@ -134,7 +134,7 @@ def test_login_form_visible():
 
     url = get_config_value("vfs-url", "AO-PT")
 
-    display = VirtualDisplay(size=(1280, 800))
+    display = VirtualDisplay()
     display.start()
     try:
         with Camoufox(headless=False, humanize=True, geoip=True) as browser:

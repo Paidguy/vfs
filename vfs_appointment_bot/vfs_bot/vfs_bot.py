@@ -205,7 +205,7 @@ class VfsBot(ABC):
                 # inside a VirtualDisplay (Xvfb) for maximum stealth on servers.
                 try:
                     from camoufox.virtdisplay import VirtualDisplay
-                    display = VirtualDisplay(size=(1280, 800))
+                    display = VirtualDisplay()
                     display.start()
                     logging.info("Started VirtualDisplay (Xvfb) for headed mode stealth")
                 except Exception as e:

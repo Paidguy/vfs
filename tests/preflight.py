@@ -45,7 +45,7 @@ def _verify_camoufox():
     from camoufox.sync_api import Camoufox
     from camoufox.virtdisplay import VirtualDisplay
     try:
-        display = VirtualDisplay(size=(1280, 800))
+        display = VirtualDisplay()
         display.start()
         try:
             with Camoufox(headless=False) as b:
