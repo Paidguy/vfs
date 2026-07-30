@@ -42,9 +42,9 @@ def _require(condition: bool, msg: str) -> None:
 
 
 def _verify_camoufox():
-    from camoufox.sync_api import SyncFirefox
+    from camoufox.sync_api import Camoufox
     try:
-        with SyncFirefox(headless=True) as b:
+        with Camoufox(headless=True) as b:
             b.new_page()
     except Exception as e:
         msg = str(e).lower()

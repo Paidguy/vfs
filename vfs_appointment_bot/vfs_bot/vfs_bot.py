@@ -189,9 +189,9 @@ class VfsBot(ABC):
         """
         if browser_type == "camoufox":
             try:
-                from camoufox.sync_api import SyncFirefox
-                logging.info("Using camoufox Firefox (Cloudflare-resistant)")
-                with SyncFirefox(headless=headless, geoip=True) as browser:
+                from camoufox.sync_api import Camoufox
+                logging.info("Using camoufox (Cloudflare-resistant Firefox)")
+                with Camoufox(headless=headless, geoip=True) as browser:
                     page = browser.new_page()
                     yield page
                 return

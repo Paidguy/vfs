@@ -43,8 +43,8 @@ def test_camoufox_importable():
 def test_camoufox_binary_present():
     """camoufox patched Firefox binary must have been downloaded."""
     try:
-        from camoufox.sync_api import SyncFirefox
-        with SyncFirefox(headless=True) as browser:
+        from camoufox.sync_api import Camoufox
+        with Camoufox(headless=True) as browser:
             _ = browser.new_page()
     except Exception as e:
         msg = str(e)
@@ -68,12 +68,12 @@ def test_no_cloudflare_block():
 
     This test FAILS if patchright Firefox was being used. It PASSES with camoufox.
     """
-    from camoufox.sync_api import SyncFirefox
+    from camoufox.sync_api import Camoufox
 
     url = get_config_value("vfs-url", "AO-PT")
     assert url, "AO-PT URL not configured"
 
-    with SyncFirefox(headless=True, geoip=True) as browser:
+    with Camoufox(headless=True, geoip=True) as browser:
         page = browser.new_page()
         page.set_default_timeout(30_000)
         # Block fonts to prevent screenshot hangs (same as production)
@@ -117,11 +117,11 @@ def test_login_form_visible():
     If this fails after test_no_cloudflare_block passes, the email field
     selector may have changed on the VFS site.
     """
-    from camoufox.sync_api import SyncFirefox
+    from camoufox.sync_api import Camoufox
 
     url = get_config_value("vfs-url", "AO-PT")
 
-    with SyncFirefox(headless=True, geoip=True) as browser:
+    with Camoufox(headless=True, geoip=True) as browser:
         page = browser.new_page()
         page.route("**/*.{woff,woff2,ttf,otf,eot}", lambda r: r.abort())
         page.goto(url)
