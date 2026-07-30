@@ -1,7 +1,9 @@
 import argparse
 import logging
 import sys
+from datetime import datetime
 from importlib.metadata import version, PackageNotFoundError
+from pathlib import Path
 from typing import Dict
 
 from vfs_appointment_bot.utils.config_reader import get_config_value, initialize_config
@@ -11,6 +13,10 @@ from vfs_appointment_bot.vfs_bot.vfs_bot_factory import (
     UnsupportedCountryError,
     get_vfs_bot,
 )
+
+# Repo root is two levels up from this file:
+# <repo_root>/vfs_appointment_bot/main.py
+_REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
 def _get_version() -> str:
@@ -59,7 +65,8 @@ def main() -> None:
     VFS appointment-checking loop until a slot is found or an unrecoverable
     error occurs.
     """
-    _initialize_logger()
+    # Logging is initialised first so that every subsequent step is captured.
+    log_file = _initialize_logger()
     initialize_config()
 
     parser = argparse.ArgumentParser(
@@ -112,11 +119,18 @@ def main() -> None:
     source_country_code = args.source_country_code
     destination_country_code = args.destination_country_code
 
+    logging.info("=" * 60)
+    logging.info("VFS Appointment Bot v%s", _get_version())
+    logging.info("Log file: %s", log_file)
+    logging.info("Route: %s → %s", source_country_code.upper(), destination_country_code.upper())
+    logging.info("=" * 60)
+
     try:
         while True:
             vfs_bot = get_vfs_bot(source_country_code, destination_country_code)
             appointment_found = vfs_bot.run(args)
             if appointment_found:
+                logging.info("Appointment found — bot is stopping.")
                 break
             countdown(
                 int(get_config_value("default", "interval", "180")),
@@ -133,34 +147,54 @@ def main() -> None:
         sys.exit(1)
 
 
-def _initialize_logger() -> None:
-    """Configure the root logger with file and console handlers.
+def _initialize_logger() -> Path:
+    """Configure the root logger with a timestamped file handler and a console handler.
 
-    - File handler (``app.log``): full ``%(levelname)s`` and source location.
-    - Stream handler (``stdout``): concise timestamp + message for the terminal.
+    - **File handler** (``logs/vfs_bot_<timestamp>.log``): captures *everything*
+      at ``DEBUG`` level — full source location, thread, etc.
+    - **Stream handler** (``stdout``): also ``DEBUG`` level so every detail is
+      visible in the terminal as well.
 
-    Safe to call multiple times — handlers are not duplicated because
-    ``basicConfig`` is a no-op when handlers are already attached.
+    The log directory is created next to the repo root automatically.
+
+    Returns:
+        The :class:`~pathlib.Path` to the log file that was opened.
+
+    Notes:
+        Safe to call multiple times — a no-op if handlers are already attached.
     """
-    # Avoid adding duplicate handlers on repeated calls (e.g. in tests).
     root = logging.getLogger()
     if root.handlers:
-        return
+        # Already initialised (e.g. during tests) — return a dummy path.
+        return Path("app.log")
 
-    file_handler = logging.FileHandler("app.log", mode="a", encoding="utf-8")
-    file_handler.setFormatter(
-        logging.Formatter(
-            "[%(asctime)s] %(levelname)s [%(filename)s:%(lineno)d] %(message)s"
-        )
+    log_dir = _REPO_ROOT / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_file = log_dir / f"vfs_bot_{timestamp}.log"
+
+    detailed_fmt = logging.Formatter(
+        "[%(asctime)s] %(levelname)-8s [%(filename)s:%(lineno)d] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
+    console_fmt = logging.Formatter(
+        "[%(asctime)s] %(levelname)-8s %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    file_handler = logging.FileHandler(log_file, mode="a", encoding="utf-8")
+    file_handler.setFormatter(detailed_fmt)
+    file_handler.setLevel(logging.DEBUG)
 
     stream_handler = logging.StreamHandler(sys.stdout)
-    stream_handler.setFormatter(logging.Formatter("[%(asctime)s] %(message)s"))
+    stream_handler.setFormatter(console_fmt)
+    stream_handler.setLevel(logging.DEBUG)
 
-    logging.basicConfig(
-        level=logging.INFO,
-        handlers=[file_handler, stream_handler],
-    )
+    root.setLevel(logging.DEBUG)
+    root.addHandler(file_handler)
+    root.addHandler(stream_handler)
+
+    return log_file
 
 
 if __name__ == "__main__":

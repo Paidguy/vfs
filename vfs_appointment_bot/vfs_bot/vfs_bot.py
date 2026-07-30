@@ -10,6 +10,7 @@ from vfs_appointment_bot.notification.notification_client_factory import (
     get_notification_client,
 )
 from vfs_appointment_bot.utils.config_reader import get_config_value
+from vfs_appointment_bot.utils.screenshot_utils import save_screenshot
 
 
 class LoginError(Exception):
@@ -56,10 +57,8 @@ class VfsBot(ABC):
             ``True`` if at least one appointment was found; ``False``
             otherwise (including on soft errors such as a missing config key).
         """
-        logging.info(
-            "Starting VFS Bot for "
-            f"{self.source_country_code.upper()}-{self.destination_country_code.upper()}"
-        )
+        route = f"{self.source_country_code.upper()}-{self.destination_country_code.upper()}"
+        logging.info("Starting VFS Bot for %s", route)
 
         # ---- Read mandatory configuration --------------------------------
         try:
@@ -70,16 +69,23 @@ class VfsBot(ABC):
             if vfs_url is None:
                 raise KeyError(url_key)
         except KeyError as exc:
-            logging.error("Missing configuration value: %s", exc)
+            logging.error("Missing configuration value for key: %s", exc)
             return False
 
         headless = headless_raw.strip().lower() in ("true", "1", "yes")
         email_id = get_config_value("vfs-credential", "email")
         password = get_config_value("vfs-credential", "password")
 
+        logging.debug(
+            "Config loaded — browser=%s headless=%s url=%s email=%s",
+            browser_type, headless, vfs_url, email_id,
+        )
+
         appointment_params = self.get_appointment_params(args)
+        logging.debug("Appointment params resolved: %s", appointment_params)
 
         # ---- Launch browser ----------------------------------------------
+        logging.info("Launching %s browser (headless=%s)", browser_type, headless)
         with sync_playwright() as p:
             browser = getattr(p, browser_type).launch(headless=headless)
             page = browser.new_page()
@@ -89,39 +95,51 @@ class VfsBot(ABC):
             page.set_default_timeout(30_000)
             page.set_default_navigation_timeout(60_000)
 
+            logging.info("Navigating to %s", vfs_url)
             page.goto(vfs_url)
+            logging.debug("Page title after navigation: %s", page.title())
+            logging.debug("Current URL: %s", page.url)
+            save_screenshot(page, "01_landing_page")
+
+            logging.debug("Running pre-login steps")
             self.pre_login_steps(page)
+            save_screenshot(page, "02_after_pre_login_steps")
 
             try:
+                logging.info("Attempting login with email: %s", email_id)
                 self.login(page, email_id, password)
-                logging.info("Logged in successfully")
-            except Exception:
+                logging.info("Login successful — current URL: %s", page.url)
+                save_screenshot(page, "03_post_login")
+            except Exception as login_exc:
+                logging.debug(
+                    "Login exception detail (full traceback):", exc_info=True
+                )
+                save_screenshot(page, "04_login_failed")
                 browser.close()
                 raise LoginError(
-                    "\033[1;31mLogin failed. "
-                    "Please verify your username and password by logging in "
-                    "to the browser manually and try again.\033[0m"
-                )
+                    f"Login failed [{type(login_exc).__name__}: {login_exc}]. "
+                    "Please verify your credentials by logging in manually."
+                ) from login_exc
 
-            logging.info("Checking appointments for %s", appointment_params)
+            logging.info("Checking appointments for params: %s", appointment_params)
             appointment_found = False
             try:
                 dates = self.check_for_appointment(page, appointment_params)
                 if dates:
                     logging.info(
-                        "\033[1;32mFound appointments on: %s\033[0m",
+                        "FOUND appointments on: %s",
                         ", ".join(dates),
                     )
                     self.notify_appointment(appointment_params, dates)
                     appointment_found = True
                 else:
-                    logging.info(
-                        "\033[1;33mNo appointments found for the specified criteria.\033[0m"
-                    )
+                    logging.info("No appointments found for the specified criteria.")
             except Exception as exc:
-                logging.error("Appointment check failed: %s", exc)
+                logging.error("Appointment check failed: %s", exc, exc_info=True)
+                save_screenshot(page, "05_appointment_check_failed")
 
             browser.close()
+            logging.info("Browser closed — cycle complete. appointment_found=%s", appointment_found)
             return appointment_found
 
     # ------------------------------------------------------------------
@@ -162,6 +180,7 @@ class VfsBot(ABC):
         """
         criteria = ", ".join(appointment_params.values())
         message = f"Found appointment(s) for {criteria} on {', '.join(dates)}"
+        logging.debug("Notification message: %s", message)
 
         channels_raw = get_config_value("notification", "channels", "")
         if not channels_raw.strip():
@@ -171,11 +190,16 @@ class VfsBot(ABC):
             return
 
         for channel in channels_raw.split(","):
+            channel = channel.strip()
+            logging.debug("Sending notification via channel: %s", channel)
             client = get_notification_client(channel)
             try:
                 client.send_notification(message)
+                logging.info("Notification sent via %s", channel)
             except Exception as exc:
-                logging.error("Failed to send %s notification: %s", channel.strip(), exc)
+                logging.error(
+                    "Failed to send %s notification: %s", channel, exc, exc_info=True
+                )
 
     # ------------------------------------------------------------------
     # Shared pre-login helper
@@ -194,7 +218,7 @@ class VfsBot(ABC):
             page.get_by_role("button", name=self._REJECT_COOKIE_RE).click(timeout=3_000)
             logging.debug("Rejected cookie consent banner.")
         except Exception:
-            pass  # No banner present — nothing to do.
+            logging.debug("No cookie consent banner found (or already dismissed).")
 
     # ------------------------------------------------------------------
     # Abstract interface
