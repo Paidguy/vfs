@@ -44,14 +44,8 @@ def test_camoufox_binary_present():
     """camoufox patched Firefox binary must have been downloaded."""
     try:
         from camoufox.sync_api import Camoufox
-        from camoufox.virtdisplay import VirtualDisplay
-        display = VirtualDisplay()
-        display.start()
-        try:
-            with Camoufox(headless=False) as browser:
-                _ = browser.new_page()
-        finally:
-            display.stop()
+        with Camoufox(headless=True) as browser:
+            _ = browser.new_page()
     except Exception as e:
         msg = str(e)
         if "executable" in msg.lower() or "not found" in msg.lower() or "fetch" in msg.lower():
@@ -75,50 +69,44 @@ def test_no_cloudflare_block():
     This test FAILS if patchright Firefox was being used. It PASSES with camoufox.
     """
     from camoufox.sync_api import Camoufox
-    from camoufox.virtdisplay import VirtualDisplay
 
     url = get_config_value("vfs-url", "AO-PT")
     assert url, "AO-PT URL not configured"
 
-    display = VirtualDisplay()
-    display.start()
-    try:
-        with Camoufox(headless=False, humanize=True, geoip=True) as browser:
-            page = browser.new_page()
-            page.set_default_timeout(30_000)
-            page.route("**/*.{woff,woff2,ttf,otf,eot}", lambda r: r.abort())
-            page.goto(url)
-            
-            # Allow time for Cloudflare to resolve if humanize takes a moment
-            page.wait_for_timeout(10_000)
+    with Camoufox(headless=True, humanize=True, geoip=True) as browser:
+        page = browser.new_page()
+        page.set_default_timeout(30_000)
+        page.route("**/*.{woff,woff2,ttf,otf,eot}", lambda r: r.abort())
+        page.goto(url)
+        
+        # Allow time for Cloudflare to resolve if humanize takes a moment
+        page.wait_for_timeout(10_000)
 
-            title = page.title().lower()
-            current_url = page.url
-            
-            # We explicitly check for localized CF titles or empty titles
-            cf_titles = ["just a moment", "attention required", "checking your browser", "hanya sebentar"]
-            assert not any(t in title for t in cf_titles), (
-                f"Cloudflare block detected!\n"
-                f"  Title: '{page.title()}'\n"
-                f"  URL: {current_url}\n"
-                f"  Hint: Your VPS IP may be in Cloudflare's datacenter block list. "
-                f"Consider a residential proxy."
+        title = page.title().lower()
+        current_url = page.url
+        
+        # We explicitly check for localized CF titles or empty titles
+        cf_titles = ["just a moment", "attention required", "checking your browser", "hanya sebentar"]
+        assert not any(t in title for t in cf_titles), (
+            f"Cloudflare block detected!\n"
+            f"  Title: '{page.title()}'\n"
+            f"  URL: {current_url}\n"
+            f"  Hint: Your VPS IP may be in Cloudflare's datacenter block list. "
+            f"Consider a residential proxy."
+        )
+
+        assert title != "", (
+            f"Page title is empty — Cloudflare JS challenge is blocking.\n"
+            f"  URL: {current_url}\n"
+            f"  Hint: camoufox may need a residential proxy to bypass this IP block."
+        )
+
+        for sel in ["#challenge-running", "#challenge-stage", "div.cf-turnstile", "[data-ray-id]"]:
+            el = page.query_selector(sel)
+            assert el is None, (
+                f"Cloudflare DOM element '{sel}' found — CF challenge is active.\n"
+                f"  Title: '{page.title()}', URL: {current_url}"
             )
-
-            assert title != "", (
-                f"Page title is empty — Cloudflare JS challenge is blocking.\n"
-                f"  URL: {current_url}\n"
-                f"  Hint: camoufox may need a residential proxy to bypass this IP block."
-            )
-
-            for sel in ["#challenge-running", "#challenge-stage", "div.cf-turnstile", "[data-ray-id]"]:
-                el = page.query_selector(sel)
-                assert el is None, (
-                    f"Cloudflare DOM element '{sel}' found — CF challenge is active.\n"
-                    f"  Title: '{page.title()}', URL: {current_url}"
-                )
-    finally:
-        display.stop()
 
 
 @pytest.mark.timeout(120)
@@ -130,31 +118,25 @@ def test_login_form_visible():
     selector may have changed on the VFS site.
     """
     from camoufox.sync_api import Camoufox
-    from camoufox.virtdisplay import VirtualDisplay
 
     url = get_config_value("vfs-url", "AO-PT")
 
-    display = VirtualDisplay()
-    display.start()
-    try:
-        with Camoufox(headless=False, humanize=True, geoip=True) as browser:
-            page = browser.new_page()
-            page.route("**/*.{woff,woff2,ttf,otf,eot}", lambda r: r.abort())
-            page.goto(url)
-            
-            # Poll for CF resolution or login form
-            try:
-                page.wait_for_selector('[placeholder="jane.doe@email.com"]', timeout=45_000)
-            except Exception:
-                pytest.fail(
-                    "Email input field '[placeholder=\"jane.doe@email.com\"]' did not appear within 45s.\n"
-                    f"  Current URL: {page.url}\n"
-                    f"  Page title: '{page.title()}'\n"
-                    "  Hint: Either CF is blocking, or VFS changed the login form."
-                )
-
-            assert page.get_by_placeholder("jane.doe@email.com").is_visible(), (
-                "Email input found in DOM but is not visible"
+    with Camoufox(headless=True, humanize=True, geoip=True) as browser:
+        page = browser.new_page()
+        page.route("**/*.{woff,woff2,ttf,otf,eot}", lambda r: r.abort())
+        page.goto(url)
+        
+        # Poll for CF resolution or login form
+        try:
+            page.wait_for_selector('[placeholder="jane.doe@email.com"]', timeout=45_000)
+        except Exception:
+            pytest.fail(
+                "Email input field '[placeholder=\"jane.doe@email.com\"]' did not appear within 45s.\n"
+                f"  Current URL: {page.url}\n"
+                f"  Page title: '{page.title()}'\n"
+                "  Hint: Either CF is blocking, or VFS changed the login form."
             )
-    finally:
-        display.stop()
+
+        assert page.get_by_placeholder("jane.doe@email.com").is_visible(), (
+            "Email input found in DOM but is not visible"
+        )

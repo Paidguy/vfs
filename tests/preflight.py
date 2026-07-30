@@ -43,15 +43,9 @@ def _require(condition: bool, msg: str) -> None:
 
 def _verify_camoufox():
     from camoufox.sync_api import Camoufox
-    from camoufox.virtdisplay import VirtualDisplay
     try:
-        display = VirtualDisplay()
-        display.start()
-        try:
-            with Camoufox(headless=False) as b:
-                b.new_page()
-        finally:
-            display.stop()
+        with Camoufox(headless=True) as b:
+            b.new_page()
     except Exception as e:
         msg = str(e).lower()
         if any(k in msg for k in ("executable", "not found", "fetch", "download")):

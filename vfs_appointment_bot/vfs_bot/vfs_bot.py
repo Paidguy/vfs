@@ -200,25 +200,10 @@ class VfsBot(ABC):
             try:
                 from camoufox.sync_api import Camoufox
                 logging.info("Using camoufox (Cloudflare-resistant Firefox)")
-                
-                # Headless browsers are highly detectable. We use headed mode
-                # inside a VirtualDisplay (Xvfb) for maximum stealth on servers.
-                try:
-                    from camoufox.virtdisplay import VirtualDisplay
-                    display = VirtualDisplay()
-                    display.start()
-                    logging.info("Started VirtualDisplay (Xvfb) for headed mode stealth")
-                except Exception as e:
-                    logging.warning("Could not start VirtualDisplay: %s", e)
-                    display = None
 
-                with Camoufox(headless=False, humanize=True, geoip=True) as browser:
+                with Camoufox(headless=headless, humanize=True, geoip=True) as browser:
                     page = browser.new_page()
-                    try:
-                        yield page
-                    finally:
-                        if display:
-                            display.stop()
+                    yield page
                 return
             except ImportError:
                 logging.warning(
